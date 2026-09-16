@@ -1,92 +1,91 @@
-#include "PROTHEUS.CH"
-#include "TOPCONN.CH"
-#include "FWMVCDEF.CH"
+#include "protheus.ch"
+#include "topconn.ch"
 
 /*--------------------------------------------------------------------*
 | Func:  PaymentGateway()
-| Autor: Eduardo Paranhos (clone educacional)
+| Autor: Eduardo Paranhos
 | Data:  10/08/2026
-| Desc:  Monitor de pagamentos — consulta gateway externo via REST
+| Desc:  Monitor de pagamentos — consulta gateway externo via FWRest
 |        para conciliar transacoes pendentes
 | Obs.:  Exemplo generico — endpoints e dados ficticios
 *---------------------------------------------------------------------*/
 
 User Function PaymentGateway()
 
-    Local oBrowse := FwBrowse():New()
-    Local cTitulo := "Monitor de Pagamentos — Gateway"
     Local aPayments := {}
-    Local oHttp
+    Local oRest
+    Local aHeader   := {}
     Local cResponse := ""
-    Local oJson
-    Local nI := 0
-    Local nTotal := 0
+    Local oJson     := JsonObject():New()
+    Local nTotal    := 0
 
     // ---------- Etapa 1: Consultar gateway externo ----------
-    ConOut("Consultando gateway de pagamentos...")
+    ConOut("[PaymentGateway] Consultando gateway de pagamentos...")
 
-    oHttp := FWHttpRest():New("https://api.gateway-exemplo.com/v1/payments")
-    oHttp:SetHeader("Accept", "application/json")
-    oHttp:SetHeader("Authorization", "Bearer {seu-token-aqui}")
-    oHttp:SetQueryParam("status", "pending")
-    oHttp:SetQueryParam("date_from", DtoS(Date() - 7))
-    oHttp:SetQueryParam("date_to", DtoS(Date()))
-    oHttp:Get()
+    oRest := FWRest():New("https://api.gateway-exemplo.com")
+    oRest:SetPath("/v1/payments?status=pending&date_from=" + DtoS(Date() - 7) + "&date_to=" + DtoS(Date()))
 
-    If oHttp:GetStatus() == 200
-        cResponse := oHttp:GetResult()
-        oJson := JsonObject():New()
-        oJson:FromJson(cResponse)
+    AAdd(aHeader, "Accept: application/json")
+    AAdd(aHeader, "Authorization: Bearer {seu-token-aqui}")
 
-        nTotal := oJson:GetProperty("total"):GetNumber()
-        ConOut("Pagamentos pendentes encontrados: " + cValToChar(nTotal))
+    If oRest:Get(aHeader)
+        cResponse := oRest:GetResult()
+
+        If oJson:FromJson(cResponse) == Nil .And. oJson:HasProperty("total")
+            nTotal := oJson["total"]
+            ConOut("[PaymentGateway] Pagamentos pendentes encontrados: " + cValToChar(nTotal))
+        EndIf
     Else
-        ConOut("Erro ao consultar gateway: " + cValToChar(oHttp:GetStatus()))
+        ConOut("[PaymentGateway] Erro ao consultar gateway: " + cValToChar(oRest:GetHTTPCode()))
         Return
     EndIf
-
-    // ---------- Etapa 2: Para cada pagamento, conciliar com banco local ----------
-    // (Exemplo simplificado — em producao, iteraria sobre resultados e faria baixa)
 
 Return
 
 /*--------------------------------------------------------------------*
-| ConsultaPagamento — Busca pagamento especifico por ID
+| ConsultaPagamento — Busca pagamento especifico por ID via FWRest
 *---------------------------------------------------------------------*/
 Static Function ConsultaPagamento(cPaymentId)
 
-    Local oHttp := FWHttpRest():New("https://api.gateway-exemplo.com/v1/payments/" + cPaymentId)
+    Local oRest       := FWRest():New("https://api.gateway-exemplo.com")
+    Local aHeader     := {}
     Local oJsonResult := JsonObject():New()
-    Local cResponse := ""
+    Local cResponse   := ""
 
-    oHttp:SetHeader("Accept", "application/json")
-    oHttp:SetHeader("Authorization", "Bearer {seu-token-aqui}")
-    oHttp:Get()
+    oRest:SetPath("/v1/payments/" + cPaymentId)
 
-    If oHttp:GetStatus() == 200
-        cResponse := oHttp:GetResult()
+    AAdd(aHeader, "Accept: application/json")
+    AAdd(aHeader, "Authorization: Bearer {seu-token-aqui}")
+
+    If oRest:Get(aHeader)
+        cResponse := oRest:GetResult()
         oJsonResult:FromJson(cResponse)
     EndIf
 
 Return oJsonResult
 
 /*--------------------------------------------------------------------*
-| ConfirmarPagamento — Confirma baixa via callback
+| ConfirmarPagamento — Confirma baixa via callback POST via FWRest
 *---------------------------------------------------------------------*/
 Static Function ConfirmarPagamento(cPaymentId, cTitulo)
 
-    Local oHttp := FWHttpRest():New("https://api.gateway-exemplo.com/v1/payments/" + cPaymentId + "/confirm")
-    Local oBody := JsonObject():New()
-    Local lOk := .F.
+    Local oRest   := FWRest():New("https://api.gateway-exemplo.com")
+    Local aHeader := {}
+    Local oBody   := JsonObject():New()
+    Local lOk     := .F.
 
-    oBody:SetProperty("titulo_protheus", cTitulo)
-    oBody:SetProperty("data_confirmacao", DtoS(Date()) + " " + Time())
+    oRest:SetPath("/v1/payments/" + cPaymentId + "/confirm")
 
-    oHttp:SetHeader("Content-Type", "application/json")
-    oHttp:SetHeader("Authorization", "Bearer {seu-token-aqui}")
-    oHttp:SetPostParams(oBody:ToJson())
-    oHttp:Post()
+    oBody["titulo_protheus"] := cTitulo
+    oBody["data_confirmacao"] := DtoS(Date()) + " " + Time()
 
-    lOk := (oHttp:GetStatus() == 200)
+    AAdd(aHeader, "Content-Type: application/json")
+    AAdd(aHeader, "Authorization: Bearer {seu-token-aqui}")
+
+    oRest:SetPostParams(oBody:ToJson())
+
+    If oRest:Post(aHeader)
+        lOk := (oRest:GetHTTPCode() == 200)
+    EndIf
 
 Return lOk

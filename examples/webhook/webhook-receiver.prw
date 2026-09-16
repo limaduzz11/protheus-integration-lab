@@ -1,49 +1,55 @@
 #include "protheus.ch"
+#include "restful.ch"
+#include "topconn.ch"
 
 /*--------------------------------------------------------------------*
 | Func:  WebhookReceiver()
-| Autor: Eduardo Paranhos (clone educacional)
+| Autor: Eduardo Paranhos
 | Data:  10/08/2026
 | Desc:  Endpoint REST para receber webhooks de sistemas externos
-|        Configurar WSOBJ com path "/api/webhook/events"
-| Obs.:  Exemplo generico — endpoints e dados ficticios
+|        Path configurado: "/api/webhook/events"
+| Obs.:  Exemplo generico com gravacao transacionada em fila (ZZ4)
 *---------------------------------------------------------------------*/
 
-WSRESTFUL WebhookReceiver Description "Recebe notificacoes de sistemas externos"
+WSRESTFUL WebhookReceiver DESCRIPTION "Recebe notificacoes de webhook de sistemas externos" FORMAT APPLICATION_JSON
 
-    WsMethod POST Description "Recebe webhook e processa evento"
+    WSMETHOD POST DESCRIPTION "Recebe webhook e processa evento" WSSYNTAX "/api/webhook/events"
 
-ENDWSRESTFUL
+END WSRESTFUL
 
 /*--------------------------------------------------------------------*
 | POST — Processa evento recebido via webhook
 *---------------------------------------------------------------------*/
-WSMETHOD POST WsReceive JSON WsService WebhookReceiver
+WSMETHOD POST WSSERVICE WebhookReceiver
 
-    Local oBody := JsonObject():New()
-    Local oResponse := JsonObject():New()
-    Local cEvent := ""
-    Local cResource := ""
-    Local cId := ""
+    Local oBody      := JsonObject():New()
+    Local oResponse  := JsonObject():New()
+    Local cEvent     := ""
+    Local cResource  := ""
+    Local cId        := ""
     Local lProcessed := .F.
+    Local cContent   := ::GetContent()
 
-    // Le corpo da requisicao
-    oBody:FromJson(WsGetPostContent())
+    ::SetContentType("application/json")
 
-    // Extrai campos
-    If oBody:GetProperty("event") != Nil
-        cEvent := oBody:GetProperty("event"):GetString()
+    If Empty(cContent) .Or. oBody:FromJson(cContent) != Nil
+        SetRestFault(400, "Payload JSON invalido")
+        Return .F.
     EndIf
 
-    If oBody:GetProperty("resource") != Nil
-        cResource := oBody:GetProperty("resource"):GetString()
+    // Extrai propriedades de forma segura
+    If oBody:HasProperty("event")
+        cEvent := cValToChar(oBody["event"])
     EndIf
 
-    If oBody:GetProperty("id") != Nil
-        cId := oBody:GetProperty("id"):GetString()
+    If oBody:HasProperty("resource")
+        cResource := cValToChar(oBody["resource"])
     EndIf
 
-    // Log do evento
+    If oBody:HasProperty("id")
+        cId := cValToChar(oBody["id"])
+    EndIf
+
     ConOut("[Webhook] Evento recebido: " + cEvent + " | Resource: " + cResource + " | ID: " + cId)
 
     // ---------- Roteamento por tipo de evento ----------
@@ -58,34 +64,43 @@ WSMETHOD POST WsReceive JSON WsService WebhookReceiver
         lProcessed := ProcessCustomerCreated(oBody)
     Otherwise
         ConOut("[Webhook] Evento nao tratado: " + cEvent)
+        lProcessed := .T. // Reconhecido para nao reenfileirar no gateway externo
     EndCase
 
-    // Resposta
+    // Resposta HTTP
     If lProcessed
-        oResponse:SetProperty("status", "processed")
-        oResponse:SetProperty("event", cEvent)
-        WsSetResponse(200, "application/json", oResponse:ToJson())
+        oResponse["status"] := "processed"
+        oResponse["event"]  := cEvent
+        ::SetResponse(oResponse:ToJson())
     Else
-        WsSetResponse(500, "application/json", '{ "status": "error", "message": "Falha ao processar evento" }')
+        SetRestFault(500, "Falha ao processar evento na fila interna")
+        Return .F.
     EndIf
 
 Return .T.
 
 /*--------------------------------------------------------------------*
-| ProcessOrderCreated — Processa evento de pedido criado
+| ProcessOrderCreated — Processa evento de pedido criado (fila ZZ4)
 *---------------------------------------------------------------------*/
 Static Function ProcessOrderCreated(cId, oBody)
 
-    // Insere na fila de processamento
-    ConOut("[Webhook] Pedido criado: " + cId + " — enfileirando...")
+    Local lOk := .T.
 
-    // DbSelectArea("ZZ4") // Tabela de fila
-    // RecLock("ZZ4", .T.)
-    // ZZ4->ZZ4_EVENTO := "order.created"
-    // ZZ4->ZZ4_REFID := cId
-    // MsUnLock()
+    ConOut("[Webhook] Pedido criado: " + cId + " — enfileirando em transacao...")
 
-Return .T.
+    Begin Transaction
+        DbSelectArea("ZZ4")
+        RecLock("ZZ4", .T.)
+        ZZ4->ZZ4_FILIAL := xFilial("ZZ4")
+        ZZ4->ZZ4_EVENTO := "order.created"
+        ZZ4->ZZ4_REFID  := cId
+        ZZ4->ZZ4_DATA   := Date()
+        ZZ4->ZZ4_HORA   := Time()
+        ZZ4->ZZ4_STATUS := "PENDENTE"
+        MsUnlock()
+    End Transaction
+
+Return lOk
 
 /*--------------------------------------------------------------------*
 | ProcessOrderUpdated — Processa evento de pedido atualizado
@@ -101,14 +116,11 @@ Static Function ProcessPaymentReceived(cId, oBody)
 
     Local nAmount := 0.0
 
-    If oBody:GetProperty("amount") != Nil
-        nAmount := oBody:GetProperty("amount"):GetNumber()
+    If oBody:HasProperty("amount")
+        nAmount := oBody["amount"]
     EndIf
 
     ConOut("[Webhook] Pagamento recebido: " + cId + " — R$ " + cValToChar(nAmount))
-
-    // Busca titulo relacionado e faz baixa
-    // u_BaixaTitulo(cId, nAmount)
 
 Return .T.
 
@@ -117,15 +129,18 @@ Return .T.
 *---------------------------------------------------------------------*/
 Static Function ProcessCustomerCreated(oBody)
 
-    Local cName := ""
+    Local cName  := ""
     Local cEmail := ""
+    Local oData
 
-    If oBody:GetProperty("data"):GetProperty("name") != Nil
-        cName := oBody:GetProperty("data"):GetProperty("name"):GetString()
-    EndIf
-
-    If oBody:GetProperty("data"):GetProperty("email") != Nil
-        cEmail := oBody:GetProperty("data"):GetProperty("email"):GetString()
+    If oBody:HasProperty("data") .And. ValType(oBody["data"]) == "J"
+        oData := oBody["data"]
+        If oData:HasProperty("name")
+            cName := cValToChar(oData["name"])
+        EndIf
+        If oData:HasProperty("email")
+            cEmail := cValToChar(oData["email"])
+        EndIf
     EndIf
 
     ConOut("[Webhook] Novo cliente: " + cName + " <" + cEmail + ">")

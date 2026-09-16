@@ -1,20 +1,19 @@
-#include "totvs.ch"
-#include "restful.ch"
-#include "TBICONN.CH"
+#include "protheus.ch"
+#include "topconn.ch"
 
 /*--------------------------------------------------------------------*
 | Func:  ExpenseApiIntegration()
-| Autor: Eduardo Paranhos (clone educacional)
+| Autor: Eduardo Paranhos
 | Data:  10/08/2026
 | Desc:  Integracao com API de despesas de viagem — consome servico
-|        externo para importar reembolsos no Protheus
+|        externo via FWRest para importar reembolsos no Protheus
 | Obs.:  Exemplo generico — endpoints e dados ficticios
 *---------------------------------------------------------------------*/
 
 User Function ExpenseApiIntegration()
 
-    Local cToken := ""
-    Local aDespesas := {}
+    Local cToken      := ""
+    Local aDespesas   := {}
     Local nImportadas := 0
 
     // ---------- Autenticacao OAuth2 ----------
@@ -27,35 +26,44 @@ User Function ExpenseApiIntegration()
 
     // ---------- Buscar despesas pendentes ----------
     aDespesas := FetchPendingExpenses(cToken)
-    ConOut("Despesas pendentes: " + cValToChar(Len(aDespesas)))
+    ConOut("[ExpenseApi] Despesas pendentes: " + cValToChar(Len(aDespesas)))
 
     // ---------- Importar cada despesa ----------
     nImportadas := ImportExpenses(aDespesas)
-    ConOut("Despesas importadas com sucesso: " + cValToChar(nImportadas))
+    ConOut("[ExpenseApi] Despesas importadas com sucesso: " + cValToChar(nImportadas))
 
 Return
 
 /*--------------------------------------------------------------------*
-| GetOAuthToken — Obtem token OAuth2 Client Credentials
+| GetOAuthToken — Obtem token OAuth2 Client Credentials via FWRest
 *---------------------------------------------------------------------*/
 Static Function GetOAuthToken()
 
-    Local oHttp := FWHttpRest():New("https://auth.despesas-exemplo.com/oauth/token")
-    Local cToken := ""
+    Local oRest     := FWRest():New("https://auth.despesas-exemplo.com")
+    Local aHeader   := {}
+    Local cBody     := ""
+    Local cToken    := ""
     Local cResponse := ""
-    Local oJson
+    Local oJson     := JsonObject():New()
 
-    oHttp:SetHeader("Content-Type", "application/x-www-form-urlencoded")
-    oHttp:SetPostParams("grant_type=client_credentials" + ;
-                        "&client_id=seu_client_id" + ;
-                        "&client_secret=seu_client_secret")
-    oHttp:Post()
+    oRest:SetPath("/oauth/token")
 
-    If oHttp:GetStatus() == 200
-        cResponse := oHttp:GetResult()
-        oJson := JsonObject():New()
-        oJson:FromJson(cResponse)
-        cToken := oJson:GetProperty("access_token"):GetString()
+    AAdd(aHeader, "Content-Type: application/x-www-form-urlencoded")
+    AAdd(aHeader, "Accept: application/json")
+
+    cBody := "grant_type=client_credentials" + ;
+             "&client_id=seu_client_id" + ;
+             "&client_secret=seu_client_secret"
+
+    oRest:SetPostParams(cBody)
+
+    If oRest:Post(aHeader)
+        cResponse := oRest:GetResult()
+        If oJson:FromJson(cResponse) == Nil .And. oJson:HasProperty("access_token")
+            cToken := cValToChar(oJson["access_token"])
+        EndIf
+    Else
+        ConOut("[ExpenseApi] Erro na autenticacao: " + cValToChar(oRest:GetHTTPCode()))
     EndIf
 
 Return cToken
@@ -65,60 +73,66 @@ Return cToken
 *---------------------------------------------------------------------*/
 Static Function FetchPendingExpenses(cToken)
 
-    Local oHttp := FWHttpRest():New("https://api.despesas-exemplo.com/v1/expenses")
-    Local aResult := {}
+    Local oRest     := FWRest():New("https://api.despesas-exemplo.com")
+    Local aHeader   := {}
+    Local aResult   := {}
     Local cResponse := ""
-    Local oJson
+    Local oJson     := JsonObject():New()
 
-    oHttp:SetHeader("Authorization", "Bearer " + cToken)
-    oHttp:SetHeader("Accept", "application/json")
-    oHttp:SetQueryParam("status", "approved")
-    oHttp:SetQueryParam("imported", "false")
-    oHttp:Get()
+    oRest:SetPath("/v1/expenses?status=approved&imported=false")
 
-    If oHttp:GetStatus() == 200
-        cResponse := oHttp:GetResult()
-        oJson := JsonObject():New()
-        oJson:FromJson(cResponse)
-        aResult := oJson:GetProperty("data"):GetArray()
+    AAdd(aHeader, "Authorization: Bearer " + cToken)
+    AAdd(aHeader, "Accept: application/json")
+
+    If oRest:Get(aHeader)
+        cResponse := oRest:GetResult()
+        If oJson:FromJson(cResponse) == Nil .And. oJson:HasProperty("data")
+            If ValType(oJson["data"]) == "A"
+                aResult := oJson["data"]
+            EndIf
+        EndIf
+    Else
+        ConOut("[ExpenseApi] Falha ao buscar despesas: " + cValToChar(oRest:GetHTTPCode()))
     EndIf
 
 Return aResult
 
 /*--------------------------------------------------------------------*
-| ImportExpenses — Importa despesas para tabela local (ZZ3)
+| ImportExpenses — Importa despesas para tabela local (ZZ3) em transacao
 *---------------------------------------------------------------------*/
 Static Function ImportExpenses(aDespesas)
 
-    Local nCount := 0
-    Local nI := 0
+    Local nCount   := 0
+    Local nI       := 0
     Local oExpense
-    Local cId := ""
-    Local cDesc := ""
-    Local nValue := 0.0
-    Local cDate := ""
+    Local cId      := ""
+    Local cDesc    := ""
+    Local nValue   := 0.0
+    Local cDate    := ""
 
     For nI := 1 To Len(aDespesas)
         oExpense := aDespesas[nI]
 
-        cId    := oExpense:GetProperty("id"):GetString()
-        cDesc  := oExpense:GetProperty("description"):GetString()
-        nValue := oExpense:GetProperty("amount"):GetNumber()
-        cDate  := oExpense:GetProperty("date"):GetString()
+        If ValType(oExpense) == "J"
+            cId    := Iif(oExpense:HasProperty("id"), cValToChar(oExpense["id"]), "")
+            cDesc  := Iif(oExpense:HasProperty("description"), cValToChar(oExpense["description"]), "")
+            nValue := Iif(oExpense:HasProperty("amount"), oExpense["amount"], 0.0)
+            cDate  := Iif(oExpense:HasProperty("date"), cValToChar(oExpense["date"]), "")
 
-        // Insere em tabela customizada
-        DbSelectArea("ZZ3")
-        RecLock("ZZ3", .T.)
-        ZZ3->ZZ3_FILIAL := xFilial("ZZ3")
-        ZZ3->ZZ3_CODIGO := cId
-        ZZ3->ZZ3_DESC   := cDesc
-        ZZ3->ZZ3_VALOR  := nValue
-        ZZ3->ZZ3_DATA   := StoD(cDate)
-        MsUnLock()
+            Begin Transaction
+                DbSelectArea("ZZ3")
+                RecLock("ZZ3", .T.)
+                ZZ3->ZZ3_FILIAL := xFilial("ZZ3")
+                ZZ3->ZZ3_CODIGO := cId
+                ZZ3->ZZ3_DESC   := cDesc
+                ZZ3->ZZ3_VALOR  := nValue
+                ZZ3->ZZ3_DATA   := StoD(cDate)
+                MsUnlock()
+            End Transaction
 
-        nCount++
-
-        ConOut("Importado: " + cId + " — " + cDesc + " — R$ " + cValToChar(nValue))
+            nCount++
+            ConOut("[ExpenseApi] Importado: " + cId + " — " + cDesc + " — R$ " + cValToChar(nValue))
+        EndIf
     Next nI
 
 Return nCount
