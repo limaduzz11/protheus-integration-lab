@@ -6,6 +6,12 @@
 [![Security](https://img.shields.io/badge/Auth-OAuth2%20%7C%20HMAC-orange?style=flat)](#security--architectural-standards)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
+<br />
+
+**English** &nbsp;|&nbsp; [Português (Brasil)](README.pt-BR.md)
+
+<br />
+
 An enterprise architectural reference and code laboratory showcasing **integration patterns** between **TOTVS Protheus ERP** and external modern cloud services.
 
 Includes complete, battle-tested ADVPL implementations for **Event-Driven Webhook Ingestion**, **Payment Gateway Reconciliation**, and **OAuth2-authenticated REST API consumption**.
